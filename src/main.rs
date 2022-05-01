@@ -1,5 +1,5 @@
 use bytemuck::{Pod, Zeroable};
-use nalgebra::{Isometry3, Perspective3, Point3, Vector3};
+use nalgebra::{Isometry3, Matrix4, Perspective3, Point3, RowVector4, Vector3, Vector4};
 use std::sync::Arc;
 use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer, CpuBufferPool, TypedBufferAccess};
 use vulkano::command_buffer::{
@@ -185,7 +185,7 @@ fn get_command_buffers(
                 )
                 .bind_vertex_buffers(0, vertex_buffer.clone())
                 .bind_index_buffer(index_buffer.clone())
-                .draw_indexed(vertex_buffer.len() as u32, 1, 0, 0, 0)
+                .draw_indexed(index_buffer.len() as u32, 1, 0, 0, 0)
                 .unwrap()
                 .end_render_pass()
                 .unwrap();
@@ -266,17 +266,35 @@ fn main() {
 
     let vertices = [
         Vertex {
-            position: [-0.5, 0.0, 0.0],
+            position: [0.0, 0.0, 0.0],
         },
         Vertex {
-            position: [0.5, 0.0, 0.0],
+            position: [0.0, 0.0, 1.0],
         },
         Vertex {
-            position: [0.0, 0.5, 0.0],
+            position: [1.0, 0.0, 0.0],
+        },
+        Vertex {
+            position: [1.0, 0.0, 1.0],
+        },
+        Vertex {
+            position: [0.0, 1.0, 0.0],
+        },
+        Vertex {
+            position: [0.0, 1.0, 1.0],
+        },
+        Vertex {
+            position: [1.0, 1.0, 0.0],
+        },
+        Vertex {
+            position: [1.0, 1.0, 1.0],
         },
     ];
 
-    let indices = [0, 1, 2];
+    let indices = [
+        2, 4, 0, 2, 6, 4, 1, 0, 4, 1, 4, 5, 3, 1, 5, 3, 5, 7, 2, 3, 7, 2, 7, 6, 6, 5, 4, 6, 7, 5,
+        1, 2, 0, 1, 3, 2,
+    ];
 
     let vertex_buffer = CpuAccessibleBuffer::from_iter(
         device.clone(),
@@ -317,16 +335,16 @@ fn main() {
     let mut previous_fence_i = 0;
 
     let uniform_buffer_subbuffer = {
-        let eye = Point3::<f32>::new(0.0, 0.0, 1.0);
+        let eye = Point3::<f32>::new(2.0, 2.0, 3.0);
         let target = Point3::<f32>::new(1.0, 0.0, 0.0);
         let view = Isometry3::look_at_rh(&eye, &target, &Vector3::y());
 
         let model = Isometry3::new(Vector3::x(), nalgebra::zero());
 
         let aspect_ratio = swapchain.image_extent()[0] as f32 / swapchain.image_extent()[1] as f32;
-        let projection = Perspective3::<f32>::new(aspect_ratio, 3.14 / 2.0, 1.0, 100.0);
+        let projection = perspective_rhs_inf_z(aspect_ratio, 3.14 / 2.0, 0.1, 100.0);
 
-        let model_view_projection = projection.into_inner() * (view * model).to_homogeneous();
+        let model_view_projection = projection * (view * model).to_homogeneous();
 
         let uniform_data = UniformData {
             model_view_projection: model_view_projection.into(),
@@ -367,7 +385,7 @@ fn main() {
         }
         Event::MainEventsCleared => {
             let uniform_buffer_subbuffer = {
-                let eye = Point3::<f32>::new(0.0, 0.0, 1.0);
+                let eye = Point3::<f32>::new(2.0, 2.0, 3.0);
                 let target = Point3::<f32>::new(0.0, 0.0, 0.0);
                 let view = Isometry3::look_at_rh(&eye, &target, &Vector3::y());
 
@@ -375,10 +393,10 @@ fn main() {
 
                 let aspect_ratio =
                     swapchain.image_extent()[0] as f32 / swapchain.image_extent()[1] as f32;
-                let projection = Perspective3::<f32>::new(aspect_ratio, 3.14 / 2.0, 0.1, 100.0);
+                let projection =
+                    perspective_rhs_inf_z(aspect_ratio, 3.14 / 2.0, 0.1, 100.0).transpose();
 
-                let model_view_projection =
-                    projection.into_inner() * (view * model).to_homogeneous();
+                let model_view_projection = projection * (view * model).to_homogeneous();
 
                 let uniform_data = UniformData {
                     model_view_projection: model_view_projection.into(),
@@ -487,4 +505,23 @@ fn main() {
         }
         _ => (),
     });
+}
+
+fn perspective_rhs_inf_z(
+    aspect_w_by_h: f32,
+    fov_y_rad: f32,
+    z_near: f32,
+    z_far: f32,
+) -> Matrix4<f32> {
+    let h = 1.0 / (fov_y_rad * 0.5).tan();
+    let w = h / aspect_w_by_h;
+    let a = -z_near / (z_far - z_near);
+    let b = (z_near * z_far) / (z_far - z_near);
+
+    Matrix4::from_rows(&[
+        RowVector4::new(w, 0.0, 0.0, 0.0),
+        RowVector4::new(0.0, -h, 0.0, 0.0),
+        RowVector4::new(0.0, 0.0, 0.0, -1.0),
+        RowVector4::new(0.0, 0.0, z_near, 0.0),
+    ])
 }
