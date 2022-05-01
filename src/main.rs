@@ -1,5 +1,6 @@
 use bytemuck::{Pod, Zeroable};
-use nalgebra::{Isometry3, Matrix4, Perspective3, Point3, RowVector4, Vector3, Vector4};
+use nalgebra::{Isometry3, Matrix4, Point3, RowVector4, Vector3};
+use std::ops::Deref;
 use std::sync::Arc;
 use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer, CpuBufferPool, TypedBufferAccess};
 use vulkano::command_buffer::{
@@ -8,14 +9,20 @@ use vulkano::command_buffer::{
 use vulkano::descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet};
 use vulkano::device::physical::{PhysicalDevice, PhysicalDeviceType, QueueFamily};
 use vulkano::device::{Device, DeviceCreateInfo, DeviceExtensions, Queue, QueueCreateInfo};
+use vulkano::format::ClearValue;
+use vulkano::format::Format;
 use vulkano::image::view::ImageView;
-use vulkano::image::{ImageUsage, SwapchainImage};
+use vulkano::image::{AttachmentImage, ImageLayout, ImageUsage, SampleCount, SwapchainImage};
 use vulkano::instance::{Instance, InstanceCreateInfo};
+use vulkano::pipeline::graphics::depth_stencil::{CompareOp, DepthState, DepthStencilState};
 use vulkano::pipeline::graphics::input_assembly::InputAssemblyState;
 use vulkano::pipeline::graphics::vertex_input::BuffersDefinition;
 use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
-use vulkano::pipeline::{GraphicsPipeline, Pipeline, PipelineBindPoint};
-use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass};
+use vulkano::pipeline::{GraphicsPipeline, Pipeline, PipelineBindPoint, StateMode};
+use vulkano::render_pass::{
+    AttachmentDescription, AttachmentReference, Framebuffer, FramebufferCreateInfo, LoadOp,
+    RenderPass, RenderPassCreateInfo, StoreOp, Subpass, SubpassDescription,
+};
 use vulkano::shader::ShaderModule;
 use vulkano::swapchain::{
     self, AcquireError, Surface, Swapchain, SwapchainCreateInfo, SwapchainCreationError,
@@ -65,7 +72,7 @@ mod fs {
 layout(location = 0) out vec4 f_color;
 
 void main() {
-f_color = vec4(1.0, 0.0, 0.0, 1.0);
+f_color = vec4(gl_FragCoord.z);
 }"
     }
 }
@@ -94,20 +101,44 @@ pub fn select_physical_device<'a>(
 }
 
 fn get_render_pass(device: Arc<Device>, swapchain: Arc<Swapchain<Window>>) -> Arc<RenderPass> {
-    vulkano::single_pass_renderpass!(
+    RenderPass::new(
         device.clone(),
-        attachments: {
-            color: {
-                load: Clear,
-                store: Store,
-                format: swapchain.image_format(),  // set the format the same as the swapchain
-                samples: 1,
-            }
+        RenderPassCreateInfo {
+            attachments: vec![
+                AttachmentDescription {
+                    load_op: LoadOp::Clear,
+                    store_op: StoreOp::Store,
+                    format: Some(swapchain.image_format()),
+                    samples: SampleCount::Sample1,
+                    initial_layout: ImageLayout::ColorAttachmentOptimal,
+                    final_layout: ImageLayout::ColorAttachmentOptimal,
+                    ..Default::default()
+                },
+                AttachmentDescription {
+                    load_op: LoadOp::Clear,
+                    store_op: StoreOp::Store,
+                    format: Some(Format::D32_SFLOAT),
+                    samples: SampleCount::Sample1,
+                    initial_layout: ImageLayout::Undefined,
+                    final_layout: ImageLayout::DepthStencilAttachmentOptimal,
+                    ..Default::default()
+                },
+            ],
+            subpasses: vec![SubpassDescription {
+                color_attachments: vec![Some(AttachmentReference {
+                    attachment: 0,
+                    layout: ImageLayout::ColorAttachmentOptimal,
+                    ..Default::default()
+                })],
+                depth_stencil_attachment: Some(AttachmentReference {
+                    attachment: 1,
+                    layout: ImageLayout::DepthStencilAttachmentOptimal,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
         },
-        pass: {
-            color: [color],
-            depth_stencil: {}
-        }
     )
     .unwrap()
 }
@@ -115,15 +146,17 @@ fn get_render_pass(device: Arc<Device>, swapchain: Arc<Swapchain<Window>>) -> Ar
 fn get_framebuffers(
     images: &[Arc<SwapchainImage<Window>>],
     render_pass: Arc<RenderPass>,
+    depth_image: Arc<AttachmentImage>,
 ) -> Vec<Arc<Framebuffer>> {
     images
         .iter()
         .map(|image| {
-            let view = ImageView::new_default(image.clone()).unwrap();
+            let color = ImageView::new_default(image.clone()).unwrap();
+            let depth = ImageView::new_default(depth_image.clone()).unwrap();
             Framebuffer::new(
                 render_pass.clone(),
                 FramebufferCreateInfo {
-                    attachments: vec![view],
+                    attachments: vec![color, depth],
                     ..Default::default()
                 },
             )
@@ -138,11 +171,13 @@ fn get_pipeline(
     fs: Arc<ShaderModule>,
     render_pass: Arc<RenderPass>,
     viewport: Viewport,
+    depth_stencil_state: Arc<DepthStencilState>,
 ) -> Arc<GraphicsPipeline> {
     GraphicsPipeline::start()
         .vertex_input_state(BuffersDefinition::new().vertex::<Vertex>())
         .vertex_shader(vs.entry_point("main").unwrap(), ())
         .input_assembly_state(InputAssemblyState::new())
+        .depth_stencil_state(depth_stencil_state.deref().clone())
         .viewport_state(ViewportState::viewport_fixed_scissor_irrelevant([viewport]))
         .fragment_shader(fs.entry_point("main").unwrap(), ())
         .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
@@ -173,7 +208,7 @@ fn get_command_buffers(
                 .begin_render_pass(
                     framebuffer.clone(),
                     SubpassContents::Inline,
-                    vec![[0.0, 0.0, 1.0, 1.0].into()],
+                    vec![[0.0, 0.0, 0.0, 1.0].into(), ClearValue::Depth(0.0)],
                 )
                 .unwrap()
                 .bind_pipeline_graphics(pipeline.clone())
@@ -259,8 +294,21 @@ fn main() {
         .unwrap()
     };
 
+    let depth_image = AttachmentImage::with_usage(
+        device.clone(),
+        surface.window().inner_size().into(),
+        Format::D32_SFLOAT,
+        ImageUsage {
+            input_attachment: true,
+            sampled: true,
+            depth_stencil_attachment: true,
+            ..ImageUsage::none()
+        },
+    )
+    .unwrap();
+
     let render_pass = get_render_pass(device.clone(), swapchain.clone());
-    let framebuffers = get_framebuffers(&images, render_pass.clone());
+    let framebuffers = get_framebuffers(&images, render_pass.clone(), depth_image.clone());
 
     vulkano::impl_vertex!(Vertex, position);
 
@@ -319,12 +367,23 @@ fn main() {
         depth_range: 0.0..1.0,
     };
 
+    let depth_stencil_state = Arc::new(DepthStencilState {
+        depth: Some(DepthState {
+            enable_dynamic: false,
+            write_enable: StateMode::Fixed(true),
+            compare_op: StateMode::Fixed(CompareOp::GreaterOrEqual),
+        }),
+        depth_bounds: None,
+        stencil: None,
+    });
+
     let pipeline = get_pipeline(
         device.clone(),
         vs.clone(),
         fs.clone(),
         render_pass.clone(),
         viewport.clone(),
+        depth_stencil_state.clone(),
     );
 
     let mut window_resized = false;
@@ -342,7 +401,7 @@ fn main() {
         let model = Isometry3::new(Vector3::x(), nalgebra::zero());
 
         let aspect_ratio = swapchain.image_extent()[0] as f32 / swapchain.image_extent()[1] as f32;
-        let projection = perspective_rhs_inf_z(aspect_ratio, 3.14 / 2.0, 0.1, 100.0);
+        let projection = perspective_rhs_inf_z(aspect_ratio, 3.14 / 2.0, 1.0);
 
         let model_view_projection = projection * (view * model).to_homogeneous();
 
@@ -393,8 +452,7 @@ fn main() {
 
                 let aspect_ratio =
                     swapchain.image_extent()[0] as f32 / swapchain.image_extent()[1] as f32;
-                let projection =
-                    perspective_rhs_inf_z(aspect_ratio, 3.14 / 2.0, 0.1, 100.0).transpose();
+                let projection = perspective_rhs_inf_z(aspect_ratio, 3.14 / 2.0, 1.0).transpose();
 
                 let model_view_projection = projection * (view * model).to_homogeneous();
 
@@ -426,7 +484,8 @@ fn main() {
                     Err(e) => panic!("Failed to recreate swapchain: {:?}", e),
                 };
                 swapchain = new_swapchain;
-                let new_framebuffers = get_framebuffers(&new_images, render_pass.clone());
+                let new_framebuffers =
+                    get_framebuffers(&new_images, render_pass.clone(), depth_image.clone());
 
                 if window_resized {
                     window_resized = false;
@@ -438,6 +497,7 @@ fn main() {
                         fs.clone(),
                         render_pass.clone(),
                         viewport.clone(),
+                        depth_stencil_state.clone(),
                     );
                     command_buffers = get_command_buffers(
                         device.clone(),
@@ -507,16 +567,9 @@ fn main() {
     });
 }
 
-fn perspective_rhs_inf_z(
-    aspect_w_by_h: f32,
-    fov_y_rad: f32,
-    z_near: f32,
-    z_far: f32,
-) -> Matrix4<f32> {
+fn perspective_rhs_inf_z(aspect_w_by_h: f32, fov_y_rad: f32, z_near: f32) -> Matrix4<f32> {
     let h = 1.0 / (fov_y_rad * 0.5).tan();
     let w = h / aspect_w_by_h;
-    let a = -z_near / (z_far - z_near);
-    let b = (z_near * z_far) / (z_far - z_near);
 
     Matrix4::from_rows(&[
         RowVector4::new(w, 0.0, 0.0, 0.0),
