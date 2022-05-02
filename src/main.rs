@@ -1,4 +1,5 @@
 use bytemuck::{Pod, Zeroable};
+use gltf_loader::Vertex;
 use nalgebra::{Isometry3, Matrix4, Point3, RowVector4, Vector3};
 use std::ops::Deref;
 use std::sync::Arc;
@@ -33,11 +34,7 @@ use winit::event::{Event, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::{Window, WindowBuilder};
 
-#[repr(C)]
-#[derive(Default, Copy, Clone, Zeroable, Pod)]
-struct Vertex {
-    position: [f32; 3],
-}
+mod gltf_loader;
 
 #[repr(C)]
 #[derive(Default, Copy, Clone, Zeroable, Pod)]
@@ -310,39 +307,10 @@ fn main() {
     let render_pass = get_render_pass(device.clone(), swapchain.clone());
     let framebuffers = get_framebuffers(&images, render_pass.clone(), depth_image.clone());
 
-    vulkano::impl_vertex!(Vertex, position);
-
-    let vertices = [
-        Vertex {
-            position: [0.0, 0.0, 0.0],
-        },
-        Vertex {
-            position: [0.0, 0.0, 1.0],
-        },
-        Vertex {
-            position: [1.0, 0.0, 0.0],
-        },
-        Vertex {
-            position: [1.0, 0.0, 1.0],
-        },
-        Vertex {
-            position: [0.0, 1.0, 0.0],
-        },
-        Vertex {
-            position: [0.0, 1.0, 1.0],
-        },
-        Vertex {
-            position: [1.0, 1.0, 0.0],
-        },
-        Vertex {
-            position: [1.0, 1.0, 1.0],
-        },
-    ];
-
-    let indices = [
-        2, 4, 0, 2, 6, 4, 1, 0, 4, 1, 4, 5, 3, 1, 5, 3, 5, 7, 2, 3, 7, 2, 7, 6, 6, 5, 4, 6, 7, 5,
-        1, 2, 0, 1, 3, 2,
-    ];
+    let model = gltf_loader::load("./assets/FlightHelmet.gltf");
+    let mesh = &model.meshes[1];
+    let vertices = mesh.vertex_bytes.clone();
+    let indices = mesh.index_bytes.clone();
 
     let vertex_buffer = CpuAccessibleBuffer::from_iter(
         device.clone(),
@@ -394,7 +362,7 @@ fn main() {
     let mut previous_fence_i = 0;
 
     let uniform_buffer_subbuffer = {
-        let eye = Point3::<f32>::new(2.0, 2.0, 3.0);
+        let eye = Point3::<f32>::new(1.0, 1.0, 1.0);
         let target = Point3::<f32>::new(1.0, 0.0, 0.0);
         let view = Isometry3::look_at_rh(&eye, &target, &Vector3::y());
 
@@ -444,7 +412,7 @@ fn main() {
         }
         Event::MainEventsCleared => {
             let uniform_buffer_subbuffer = {
-                let eye = Point3::<f32>::new(2.0, 2.0, 3.0);
+                let eye = Point3::<f32>::new(1.0, 1.0, 1.0);
                 let target = Point3::<f32>::new(0.0, 0.0, 0.0);
                 let view = Isometry3::look_at_rh(&eye, &target, &Vector3::y());
 

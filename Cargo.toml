@@ -13,3 +13,8 @@ vulkano-win = { version = "0.29.0" }
 rand = "0.8.5"
 bytemuck = "1.8.0"
 nalgebra = { version = "0.31", features = ["bytemuck"]}
+
+
+
+#split to different crate at some point
+gltf = "1.0"
